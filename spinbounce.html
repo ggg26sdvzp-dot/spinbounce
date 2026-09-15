@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SpinBounce</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#05050a; touch-action:none; }
+  #wrap { position:fixed; inset:0; }
+  canvas { display:block; width:100%; height:100%; }
+
+  #hud {
+    position:fixed; top:0; left:0; right:0;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:18px 20px; pointer-events:none;
+    font-family:'Segoe UI', system-ui, sans-serif;
+    color:#eef0ff;
+  }
+  #score {
+    font-size:44px; font-weight:700; letter-spacing:-1px;
+    text-shadow:0 0 18px rgba(140,170,255,0.55);
+  }
+  #best { font-size:13px; opacity:0.55; margin-top:2px; font-weight:500; }
+  #level-tag {
+    font-size:13px; font-weight:600; padding:6px 12px; border-radius:20px;
+    background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
+    backdrop-filter: blur(4px);
+  }
+
+  .overlay {
+    position:fixed; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center;
+    font-family:'Segoe UI', system-ui, sans-serif; color:#f2f3ff;
+    background:radial-gradient(ellipse at 50% 30%, rgba(60,50,120,0.55), rgba(5,5,10,0.92) 70%);
+    transition:opacity 0.35s ease;
+  }
+  .overlay.hidden { opacity:0; pointer-events:none; }
+  .title {
+    font-size:58px; font-weight:800; letter-spacing:-1.5px;
+    background:linear-gradient(135deg, #8fb5ff, #d99bff 55%, #ff9bd0);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 30px rgba(150,140,255,0.35));
+  }
+  .tagline { margin-top:10px; font-size:15px; color:#b9bce0; font-weight:500; letter-spacing:0.2px; }
+  .hint { margin-top:34px; font-size:14px; color:#8f92c0; line-height:1.7; max-width:280px; }
+  .hint b { color:#e3e5ff; }
+  .go-score { font-size:16px; color:#a3a6d6; margin-top:6px; }
+  .go-score .n { color:#fff; font-weight:700; }
+  .go-title {
+    font-size:38px; font-weight:800; color:#ff8fa8;
+    text-shadow:0 0 24px rgba(255,90,120,0.45); letter-spacing:-1px;
+  }
+  .newbest {
+    margin-top:8px; font-size:13px; font-weight:700; color:#ffd98f;
+    text-shadow:0 0 14px rgba(255,210,140,0.5);
+  }
+  .tapbtn {
+    margin-top:30px; padding:13px 34px; border-radius:30px;
+    font-size:15px; font-weight:700; letter-spacing:0.3px;
+    background:linear-gradient(135deg,#7f9bff,#c98bff);
+    color:#0b0a18; border:none; box-shadow:0 8px 26px rgba(130,110,255,0.4);
+    animation:pulse 1.7s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{ transform:scale(1);} 50%{ transform:scale(1.045);} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div id="hud">
+    <div>
+      <div id="score">0</div>
+      <div id="best">BEST 0</div>
+    </div>
+    <div style="text-align:right;">
+      <div id="level-tag">LEVEL 1</div>
+      <div id="next-level" style="margin-top:6px; font-size:12px; opacity:0.6; font-weight:600;"></div>
+    </div>
+  </div>
+
+  <div id="start-overlay" class="overlay">
+    <div class="title">SpinBounce</div>
+    <div class="tagline">climb the tower, one bounce at a time</div>
+    <div class="hint"><b>M1 or SPACE</b> to jump.<br>The ball waits until you press —<br>time it to the rotating gap.<br><span style="opacity:0.75;">First two climbs are always safe.</span></div>
+    <button class="tapbtn" id="start-btn">Tap to Start</button>
+  </div>
+
+  <div id="over-overlay" class="overlay hidden">
+    <div class="go-title">Missed it</div>
+    <div class="go-score">You reached <span class="n" id="final-score">0</span> platforms</div>
+    <div class="newbest" id="newbest-tag" style="visibility:hidden;">NEW BEST HEIGHT</div>
+    <button class="tapbtn" id="restart-btn">Tap to Retry</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, DPR;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- constants ----------
+  const RING_GAP   = 118;      // vertical world-px between platforms
+  const TOWER_RX   = 92;       // tower ellipse radius x
+  const TOWER_RY   = 26;       // tower ellipse radius y (flattening)
+  const BALL_R     = 13;
+  const GRAVITY    = 0.62;
+  const APEX_BUFFER = 72;      // how far above the target platform the ball's apex clears
+  const LANDING_BAND = 20;     // world-px window around the platform where alignment is checked every frame
+  const FRONT_ANGLE = 90;      // degrees, near-side of ellipse (canvas convention: 90 = bottom)
+  const PERFECT_TOL = 14;      // degrees of tolerance for a "perfect" landing
+
+  const LEVELS = [
+    { min:0,  name:'LEVEL 1', bg:['#0c1030','#141b46'], plat:['#5ec8ff','#7ea8ff'] },
+    { min:10, name:'LEVEL 2', bg:['#170b34','#2b1054'], plat:['#c07bff','#8f6bff'] },
+    { min:25, name:'LEVEL 3', bg:['#2a0b12','#4a1020'], plat:['#ff5f7a','#ff8a5c'] },
+    { min:50, name:'LEVEL 4', bg:['#031418','#08262c'], plat:['#3dffd0','#4dd6ff'] },
+    { min:75, name:'LEVEL 5', bg:['#050510','#0a0a22'], plat:['#e9e9ff','#9aa8ff'] },
+  ];
+  function levelFor(idx){ let l=LEVELS[0]; for(const L of LEVELS){ if(idx>=L.min) l=L; } return l; }
+  function tierFor(idx){
+    if (idx<10) return 0;
+    if (idx<25) return 1;
+    if (idx<50) return 2;
+    if (idx<75) return 3;
+    return 4;
+  }
+
+  // ---------- state ----------
+  let state = 'start'; // start | playing | gameover
+  let score = 0, best = 0;
+  let combo = 0, perfectStreak = 0;
+  let rotationAngle = 0;
+  let rotationDir = 1;
+  let rotationSpeed = 0.9;
+  let dirFlipTimer = 240;
+  let pauseTimer = 0; // frames the tower sits still before a direction reversal (0.5s @60fps = 30)
+  let cameraY = 0;
+  let shake = 0;
+  let particles = [];
+  let popups = []; // floating text
+  let rings = {}; // index -> {baseAngle, arcWidth, speedMult}
+  let ball = { y:0, vy:0, platformIndex:0, mode:'intro', idleT:0 };
+  let jumpVelocity = 0;
+  let lastCrossCheckY = 0;
+
+  function ringData(i){
+    if (i<=2) return { baseAngle:FRONT_ANGLE, arcWidth:9999, speedMult:1 }; // first two climbs: guaranteed landing, room to learn the spin
+    if (!rings[i]){
+      const tier = tierFor(i);
+      const arcWidths = [130, 108, 82, 58, 40];
+      const speedMultRange = tier===4 ? [0.85,1.2] : [1,1];
+      const sm = speedMultRange[0] + Math.random()*(speedMultRange[1]-speedMultRange[0]);
+      rings[i] = {
+        baseAngle: Math.random()*360,
+        arcWidth: arcWidths[tier],
+        speedMult: sm
+      };
+    }
+    return rings[i];
+  }
+
+  function ringAngleNow(i){
+    const r = ringData(i);
+    return (r.baseAngle + rotationAngle*rotationDir*r.speedMult) % 360;
+  }
+
+  function angleDiff(a,b){
+    let d = (a-b+540)%360 - 180;
+    return d;
+  }
+
+  function baseSpeedForIndex(i){
+    const tier = tierFor(i);
+    const speeds = [1.6, 2.3, 3.0, 3.8, 4.8];
+    return speeds[tier];
+  }
+
+  function flipIntervalForIndex(i){
+    const tier = tierFor(i);
+    // frames until the tower suddenly reverses direction — shorter (more frequent) at higher tiers
+    const ranges = [[150,260], [110,200], [80,150], [55,110], [35,80]];
+    const [lo,hi] = ranges[tier];
+    return lo + Math.random()*(hi-lo);
+  }
+
+  function resetGame(){
+    score = 0; combo = 0; perfectStreak = 0;
+    rotationAngle = 0; rotationDir = 1;
+    dirFlipTimer = flipIntervalForIndex(0);
+    pauseTimer = 0;
+    rings = {};
+    ball = { y:-620, vy:0, platformIndex:0, mode:'intro', idleT:0 };
+    cameraY = 0;
+    particles = []; popups = []; shake = 0;
+    updateHud();
+  }
+
+  function updateHud(){
+    document.getElementById('score').textContent = score;
+    document.getElementById('best').textContent = 'BEST ' + best;
+    document.getElementById('level-tag').textContent = levelFor(score).name;
+    const nextLvl = LEVELS.find(L => L.min > score);
+    document.getElementById('next-level').textContent =
+      nextLvl ? (nextLvl.min - score) + ' to next level' : 'final level';
+  }
+
+  function launchBall(){
+    const targetIndex = ball.platformIndex + 1;
+    const targetY = -targetIndex * RING_GAP;
+    const dist = (ball.y - targetY) + APEX_BUFFER; // distance ball must rise
+    jumpVelocity = Math.sqrt(Math.max(2*GRAVITY*dist, 1));
+    ball.vy = -jumpVelocity;
+    ball.mode = 'flying';
+    lastCrossCheckY = ball.y;
+  }
+
+  function spawnParticles(x,y,color,count,spread){
+    for(let k=0;k<count;k++){
+      const a = Math.random()*Math.PI*2;
+      const sp = (0.6+Math.random()*2.4)*spread;
+      particles.push({
+        x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp*0.6 - 1.2,
+        life:1, decay:0.018+Math.random()*0.02, color, r:2+Math.random()*2.5
+      });
+    }
+  }
+
+  function popupText(text,color){
+    popups.push({ text, color, t:1, x:0 });
+  }
+
+  function landOn(index, diff){
+    ball.platformIndex = index;
+    ball.y = -index*RING_GAP;
+    ball.vy = 0;
+    ball.mode = 'idle';
+    ball.idleT = 8;
+
+    const perfect = Math.abs(diff) <= PERFECT_TOL;
+    const lvl = levelFor(index);
+    const platColor = lvl.plat[0];
+
+    if (perfect){
+      perfectStreak++;
+      combo++;
+      popupText('PERFECT +3', '#ffd98f');
+      score += 3;
+      spawnParticles(0, ballScreenY(), platColor, 22, 3.2);
+    } else {
+      perfectStreak = 0;
+      combo++;
+      score += 1;
+      spawnParticles(0, ballScreenY(), platColor, 12, 2);
+    }
+    if (perfectStreak>0 && perfectStreak%3===0){
+      popupText('COMBO x'+perfectStreak, '#8fffe0');
+    }
+    if (combo>0 && combo%10===0){
+      popupText('STREAK BONUS +10', '#a0c8ff');
+      score += 10;
+    }
+    if (score>best) best = score;
+    updateHud();
+  }
+
+  function missFall(){
+    ball.mode = 'dead';
+    combo = 0; perfectStreak = 0;
+    shake = 14;
+    spawnParticles(0, ballScreenY(), '#ff6b7a', 26, 3.6);
+    setTimeout(()=> triggerGameOver(), 480);
+  }
+
+  function ballScreenY(){
+    return H*0.62 + (ball.y - cameraY);
+  }
+
+  function triggerGameOver(){
+    state = 'gameover';
+    document.getElementById('final-score').textContent = score;
+    const nb = document.getElementById('newbest-tag');
+    if (score>0 && score===best){ nb.style.visibility='visible'; } else { nb.style.visibility='hidden'; }
+    document.getElementById('over-overlay').classList.remove('hidden');
+  }
+
+  // ---------- input ----------
+  function handleJump(){
+    if (state==='start'){ startGame(); return; }
+    if (state==='gameover'){ return; } // restart via button only
+    if (state==='playing' && ball.mode==='idle' && ball.idleT<=0){
+      launchBall();
+    }
+  }
+  function startGame(){
+    resetGame();
+    state = 'playing';
+    document.getElementById('start-overlay').classList.add('hidden');
+  }
+  function restartGame(){
+    resetGame();
+    state = 'playing';
+    document.getElementById('over-overlay').classList.add('hidden');
+  }
+
+  document.getElementById('start-btn').addEventListener('click', startGame);
+  document.getElementById('restart-btn').addEventListener('click', restartGame);
+  canvas.addEventListener('pointerdown', handleJump);
+  window.addEventListener('keydown', (e)=>{
+    if (e.code==='Space'){ e.preventDefault(); handleJump(); }
+  });
+
+  // ---------- update ----------
+  function update(){
+    if (state!=='playing') return;
+
+    const tier = tierFor(Math.max(ball.platformIndex,0));
+    rotationSpeed = baseSpeedForIndex(ball.platformIndex);
+
+    if (pauseTimer > 0){
+      pauseTimer--;
+      if (pauseTimer <= 0){
+        rotationDir *= -1;
+        dirFlipTimer = flipIntervalForIndex(ball.platformIndex);
+      }
+      // no rotation while paused
+    } else {
+      rotationAngle += rotationSpeed;
+      dirFlipTimer--;
+      if (dirFlipTimer<=0){
+        pauseTimer = 30; // ~0.5s stop before the reversal
+        shake = Math.max(shake, 3);
+      }
+    }
+
+    // camera follows current platform smoothly
+    const targetCam = -ball.platformIndex*RING_GAP;
+    cameraY += (targetCam - cameraY) * 0.28;
+
+    if (ball.mode==='intro'){
+      ball.vy += GRAVITY;
+      ball.y += ball.vy;
+      if (ball.y >= 0){
+        ball.y = 0;
+        ball.vy = 0;
+        ball.mode = 'idle';
+        ball.idleT = 12;
+        shake = 5;
+        spawnParticles(0, ballScreenY(), '#ffffff', 14, 2.4);
+      }
+    } else if (ball.mode==='idle'){
+      if (ball.idleT>0) ball.idleT--;
+      // otherwise: sits still, waiting for M1 / Space
+    } else if (ball.mode==='flying'){
+      ball.vy += GRAVITY;
+      ball.y += ball.vy;
+
+      const targetIndex = ball.platformIndex+1;
+      const targetY = -targetIndex*RING_GAP;
+      if (ball.vy>0){
+        const dist = ball.y - targetY; // negative = still above target, 0 = level, positive = past it
+        if (dist >= -LANDING_BAND && dist <= LANDING_BAND){
+          const ringAng = ringAngleNow(targetIndex);
+          const diff = angleDiff(ringAng, FRONT_ANGLE);
+          const arcW = ringData(targetIndex).arcWidth;
+          if (Math.abs(diff) <= arcW/2){
+            landOn(targetIndex, diff);
+          }
+        } else if (dist > LANDING_BAND){
+          ball.y = targetY;
+          missFall();
+        }
+      }
+    } else if (ball.mode==='dead'){
+      ball.vy += GRAVITY*0.7;
+      ball.y += ball.vy;
+    }
+
+    if (shake>0) shake *= 0.88;
+
+    for (let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.12;
+      p.life -= p.decay;
+      if (p.life<=0) particles.splice(i,1);
+    }
+    for (let i=popups.length-1;i>=0;i--){
+      popups[i].t -= 0.016;
+      if (popups[i].t<=0) popups.splice(i,1);
+    }
+  }
+
+  // ---------- draw ----------
+  function drawRing(i, colorPair){
+    const y = H*0.62 + (-i*RING_GAP - cameraY);
+    if (y < -60 || y > H+60) return;
+    const cx = W/2;
+
+    ctx.save();
+    ctx.translate(cx, y);
+    ctx.globalAlpha = 0.16;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0,0, TOWER_RX, TOWER_RY, 0, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+
+    if (i <= ball.platformIndex){
+      // already landed on: locked in, and kept alive with a pulsing glow + orbiting sparkles
+      const t = performance.now()*0.001;
+      const pulse = 0.7 + Math.sin(t*1.8 + i*0.9)*0.3;
+
+      ctx.save();
+      ctx.translate(cx,y);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = colorPair[0];
+      ctx.shadowColor = colorPair[1];
+      ctx.shadowBlur = 16 + pulse*16;
+      ctx.beginPath();
+      ctx.ellipse(0,0, TOWER_RX, TOWER_RY, 0, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.35 + pulse*0.25;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(0,0, TOWER_RX*0.72, TOWER_RY*0.72, 0, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(cx,y);
+      ctx.globalCompositeOperation = 'lighter';
+      const sparkleCount = 3;
+      for (let s=0; s<sparkleCount; s++){
+        const a = t*1.1 + i*2.1 + (s/sparkleCount)*Math.PI*2;
+        const sx = Math.cos(a)*TOWER_RX*0.86;
+        const sy = Math.sin(a)*TOWER_RY*0.86;
+        ctx.globalAlpha = 0.55 + Math.sin(t*3+s+i)*0.35;
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 2.2, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
+
+    const ring = ringData(i);
+    const ang = ringAngleNow(i);
+    const half = ring.arcWidth/2;
+    const startA = (ang-half) * Math.PI/180;
+    const endA = (ang+half) * Math.PI/180;
+
+    ctx.save();
+    ctx.translate(cx,y);
+    ctx.rotate(0);
+    ctx.scale(1, TOWER_RY/TOWER_RX);
+    ctx.lineWidth = 20;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = colorPair[0];
+    ctx.shadowColor = colorPair[1];
+    ctx.shadowBlur = 22;
+    ctx.beginPath();
+    ctx.arc(0,0, TOWER_RX, startA, endA);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function draw(){
+    const lvl = levelFor(Math.max(score,ball.platformIndex));
+    // background gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, lvl.bg[1]);
+    g.addColorStop(1, lvl.bg[0]);
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // faint stars for space level
+    if (lvl===LEVELS[4]){
+      ctx.fillStyle='rgba(255,255,255,0.5)';
+      for(let s=0;s<40;s++){
+        const sx = (s*97)%W;
+        const sy = (s*53 + (performance.now()*0.01))%H;
+        ctx.globalAlpha = 0.15+((s*37)%50)/100;
+        ctx.fillRect(sx,sy,1.6,1.6);
+      }
+      ctx.globalAlpha=1;
+    }
+
+    ctx.save();
+    const sx = shake ? (Math.random()-0.5)*shake : 0;
+    const sy = shake ? (Math.random()-0.5)*shake : 0;
+    ctx.translate(sx, sy);
+
+    const cx = W/2;
+
+    // central column glow
+    ctx.save();
+    const colGrad = ctx.createLinearGradient(cx-18,0,cx+18,0);
+    colGrad.addColorStop(0,'rgba(255,255,255,0.02)');
+    colGrad.addColorStop(0.5,'rgba(255,255,255,0.09)');
+    colGrad.addColorStop(1,'rgba(255,255,255,0.02)');
+    ctx.fillStyle = colGrad;
+    ctx.fillRect(cx-18, 0, 36, H);
+    ctx.restore();
+
+    // rings: draw a window around current platform index
+    const baseIdx = Math.max(0, ball.platformIndex-1);
+    for (let i=baseIdx; i<=ball.platformIndex+7; i++){
+      drawRing(i, levelFor(i).plat);
+    }
+
+    // ball
+    const by = ballScreenY();
+    if (state!=='start'){
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const grad = ctx.createRadialGradient(cx,by,0, cx,by,BALL_R*3.4);
+      grad.addColorStop(0,'rgba(255,255,255,0.95)');
+      grad.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(cx,by,BALL_R*3.4,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = '#bcd4ff';
+      ctx.shadowBlur = 16;
+      ctx.beginPath(); ctx.arc(cx,by,BALL_R,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    // particles
+    for (const p of particles){
+      ctx.save();
+      ctx.globalAlpha = Math.max(p.life,0);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(cx+p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // popups
+    ctx.textAlign = 'center';
+    for (const p of popups){
+      ctx.save();
+      ctx.globalAlpha = Math.min(p.t*1.4,1);
+      ctx.fillStyle = p.color;
+      ctx.font = '700 20px Segoe UI, system-ui, sans-serif';
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 10;
+      ctx.fillText(p.text, cx, by - 70 - (1-p.t)*40);
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  resetGame();
+  loop();
+})();
+</script>
+</body>
+</html>
