@@ -14,8 +14,10 @@
   const finalScoreEl = document.getElementById('final-score');
   const newBestTag = document.getElementById('newbest-tag');
 
+  const globalGameCore = window.GameCore || {};
   const STORAGE_KEY = 'spinbounce-best-score-v1';
   const TUTORIAL_KEY = 'spinbounce-tutorial-seen-v1';
+  const DIFFICULTY_KEY = 'spinbounce-difficulty-v1';
 
   const RING_GAP = 118;
   const TOWER_RX = 92;
@@ -38,11 +40,13 @@
   let W = 0;
   let H = 0;
   let DPR = 1;
+  let qualitySettings = globalGameCore.resolveQualitySettings ? globalGameCore.resolveQualitySettings(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches || navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2) : { particleMultiplier: 1, maxParticles: 90, extraGlow: true, extraSparkles: true };
 
   let state = 'start';
   let score = 0;
   let combo = 0;
   let best = 0;
+  let selectedDifficulty = 'normal';
   let rotationAngle = 0;
   let rotationDir = 1;
   let rotationSpeed = 1.6;
@@ -79,6 +83,35 @@
     return current;
   }
 
+  function getSelectedDifficulty() {
+    return globalGameCore.getDifficultyPreset ? globalGameCore.getDifficultyPreset(selectedDifficulty) : { speed: 1, progression: 1, ringArc: 1, particleMultiplier: 1, comboScale: 1 };
+  }
+
+  function setDifficulty(name) {
+    const preset = globalGameCore.getDifficultyPreset ? globalGameCore.getDifficultyPreset(name) : null;
+    if (!preset) return;
+    selectedDifficulty = name;
+    localStorage.setItem(DIFFICULTY_KEY, name);
+    document.querySelectorAll('.difficulty-btn').forEach((button) => {
+      const isActive = button.dataset.difficulty === name;
+      button.classList.toggle('active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
+    });
+    if (state === 'start') {
+      updateHud();
+    }
+  }
+
+  function loadDifficulty() {
+    const stored = localStorage.getItem(DIFFICULTY_KEY) || 'normal';
+    selectedDifficulty = globalGameCore.DIFFICULTY_PRESETS && globalGameCore.DIFFICULTY_PRESETS[stored] ? stored : 'normal';
+    document.querySelectorAll('.difficulty-btn').forEach((button) => {
+      const isActive = button.dataset.difficulty === selectedDifficulty;
+      button.classList.toggle('active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
+    });
+  }
+
   function tierFor(index) {
     if (index < 10) return 0;
     if (index < 25) return 1;
@@ -113,7 +146,7 @@
 
   function updateHud() {
     scoreEl.textContent = String(score);
-    bestEl.textContent = 'BEST ' + best;
+    bestEl.textContent = 'BEST ' + best + ' · ' + getSelectedDifficulty().label;
     levelTagEl.textContent = levelFor(score).name;
 
     const nextLevel = LEVELS.find((level) => level.min > score);
@@ -190,7 +223,9 @@
   }
 
   function spawnParticles(x, y, color, count, spread) {
-    for (let i = 0; i < count; i++) {
+    const cappedCount = Math.min(Math.max(0, count), qualitySettings.maxParticles || 90);
+    const multiplier = qualitySettings.particleMultiplier || 1;
+    for (let i = 0; i < Math.round(cappedCount * multiplier); i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = (0.6 + Math.random() * 2.4) * spread;
       particles.push({
@@ -218,11 +253,12 @@
     const targetIndex = ball.platformIndex + 1;
     const targetY = -targetIndex * RING_GAP;
     const distance = Math.abs(ball.y - targetY) + APEX_BUFFER;
-    ball.vy = -Math.sqrt(Math.max(2 * GRAVITY * distance, 1));
+    const difficulty = getSelectedDifficulty();
+    ball.vy = -Math.sqrt(Math.max(2 * GRAVITY * distance, 1)) * (difficulty.speed > 1 ? 1.05 : 1);
     ball.mode = 'flying';
     playAudioCue('jump');
     triggerHaptics(12);
-    spawnParticles(0, ballScreenY(), '#dfe8ff', 12, 2.4);
+    spawnParticles(0, ballScreenY(), '#dfe8ff', 10, 2.2);
   }
 
   function landOn(index, diff) {
@@ -268,7 +304,7 @@
     shake = 14;
     playAudioCue('gameover');
     triggerHaptics([30, 50, 30]);
-    spawnParticles(0, ballScreenY(), '#ff6b7a', 26, 3.6);
+    spawnParticles(0, ballScreenY(), '#ff6b7a', 18, 3.2);
     setTimeout(triggerGameOver, 480);
   }
 
@@ -277,7 +313,8 @@
     state = 'playing';
     startOverlay.classList.add('hidden');
     pauseOverlay.classList.add('hidden');
-    pauseBtn.style.display = 'block';
+    pauseBtn.classList.remove('hidden');
+    pauseBtn.textContent = 'Pause';
     markTutorialSeen();
     showTutorialHint();
   }
@@ -297,12 +334,16 @@
     }
   }
 
+  function setPauseVisible(visible) {
+    pauseBtn.classList.toggle('hidden', !visible);
+  }
+
   function restartGame() {
     resetGame();
     overOverlay.classList.add('hidden');
     state = 'playing';
     pauseBtn.textContent = 'Pause';
-    pauseBtn.style.display = 'block';
+    setPauseVisible(true);
     markTutorialSeen();
     showTutorialHint();
   }
@@ -312,7 +353,7 @@
     finalScoreEl.textContent = score;
     newBestTag.style.visibility = score > 0 && score === best ? 'visible' : 'hidden';
     overOverlay.classList.remove('hidden');
-    pauseBtn.style.display = 'none';
+    setPauseVisible(false);
   }
 
   function handleJump() {
@@ -337,7 +378,8 @@
   function update() {
     if (state !== 'playing') return;
 
-    const targetRotationSpeed = baseSpeedForIndex(ball.platformIndex) + difficultyBonus();
+    const difficulty = getSelectedDifficulty();
+    const targetRotationSpeed = (baseSpeedForIndex(ball.platformIndex) + difficultyBonus()) * difficulty.speed * difficulty.progression;
     rotationSpeed = targetRotationSpeed;
     rotationAngle += rotationSpeed * rotationDir;
 
@@ -520,27 +562,29 @@
     ctx.restore();
 
     const baseIndex = Math.max(0, ball.platformIndex - 1);
-    for (let i = baseIndex; i <= ball.platformIndex + 7; i += 1) {
+    for (let i = baseIndex; i <= ball.platformIndex + 6; i += 1) {
       drawRing(i, levelFor(i).plat);
     }
 
     const by = ballScreenY();
-    if (state !== 'start') {
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const glow = ctx.createRadialGradient(cx, by, 0, cx, by, BALL_R * 3.4);
-      glow.addColorStop(0, 'rgba(255,255,255,0.95)');
-      glow.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(cx, by, BALL_R * 3.4, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+    if (state !== 'start' && qualitySettings.extraGlow) {
+      if (qualitySettings.extraGlow) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const glow = ctx.createRadialGradient(cx, by, 0, cx, by, BALL_R * 3.4);
+        glow.addColorStop(0, 'rgba(255,255,255,0.95)');
+        glow.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(cx, by, BALL_R * 3.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
 
       ctx.save();
       ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = '#bcd4ff';
-      ctx.shadowBlur = 16;
+      ctx.shadowColor = qualitySettings.extraGlow ? '#bcd4ff' : 'rgba(255,255,255,0.2)';
+      ctx.shadowBlur = qualitySettings.extraGlow ? 16 : 6;
       ctx.beginPath();
       ctx.arc(cx, by, BALL_R, 0, Math.PI * 2);
       ctx.fill();
@@ -579,7 +623,10 @@
   }
 
   function bindEvents() {
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', () => {
+      resize();
+      qualitySettings = globalGameCore.resolveQualitySettings ? globalGameCore.resolveQualitySettings(window.innerWidth < 600 || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) : qualitySettings;
+    });
     canvas.addEventListener('pointerdown', handleJump);
     pauseBtn.addEventListener('click', () => {
       if (state === 'paused' || state === 'playing') {
@@ -591,6 +638,10 @@
     document.getElementById('resume-btn').addEventListener('click', togglePause);
     document.getElementById('pause-restart-btn').addEventListener('click', restartGame);
     document.getElementById('restart-btn').addEventListener('click', restartGame);
+
+    document.querySelectorAll('.difficulty-btn').forEach((button) => {
+      button.addEventListener('click', () => setDifficulty(button.dataset.difficulty));
+    });
 
     window.addEventListener('keydown', (event) => {
       if (event.code === 'Space') {
@@ -606,12 +657,13 @@
 
   function init() {
     loadBestScore();
+    loadDifficulty();
     resize();
     bindEvents();
     updateHud();
     showTutorialHint();
-    pauseBtn.style.display = state === 'playing' ? 'block' : 'block';
     pauseBtn.textContent = 'Pause';
+    setPauseVisible(state !== 'gameover');
     resetGame();
     loop();
   }

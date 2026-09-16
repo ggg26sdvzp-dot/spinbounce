@@ -38,6 +38,12 @@
             </ul>
           </div>
 
+          <div class="difficulty-picker" aria-label="Set difficulty">
+            <button class="difficulty-btn" type="button" data-difficulty="easy">Easy</button>
+            <button class="difficulty-btn active" type="button" data-difficulty="normal">Normal</button>
+            <button class="difficulty-btn" type="button" data-difficulty="hard">Hard</button>
+          </div>
+
           <div class="hint"><b>Tap / click / Space</b> to jump. The ball waits for you to act, so time it to the rotating gap.</div>
           <div class="button-row">
             <button class="tapbtn" id="start-btn" type="button">Start run</button>
@@ -68,6 +74,7 @@
       </div>
     </div>
 
+    <script src="game-core.js"></script>
     <script src="game.js"></script>
   </body>
 </html>
